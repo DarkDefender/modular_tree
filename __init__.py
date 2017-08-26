@@ -23,7 +23,7 @@ import bpy
 from bpy.props import StringProperty, BoolProperty, FloatProperty, IntProperty, EnumProperty, PointerProperty
 from bpy.types import Operator, Panel, Scene, Menu, AddonPreferences, PropertyGroup
 
-from .generator_operators import MakeTreeOperator, BatchTreeOperator, MakeTwigOperator, UpdateTreeOperator, UpdateTwigOperator, SetupNodeTreeOperator
+from .generator_operators import MakeTreeOperator, BatchTreeOperator, MakeTwigOperator, UpdateTreeOperator, UpdateTwigOperator, SetupNodeTreeOperator, ConnectStrokes
 from .presets import TreePresetLoadMenu, TreePresetRemoveMenu, SaveTreePresetOperator, InstallTreePresetOperator, RemoveTreePresetOperator, LoadTreePresetOperator
 from .logo import display_logo
 from .wind_setup_utils import WindOperator, MakeControllerOperator, MakeTerrainOperator
@@ -149,6 +149,10 @@ class MakeTreePanel(Panel):
         row = layout.row()
         row.scale_y = 1.5
         row.operator("mod_tree.add_tree", icon="WORLD")
+
+        row = layout.row()
+        row.scale_y = 1
+        row.operator("mod_tree.connect_strokes", icon="GREASEPENCIL")
 
         row = layout.row()
         row.scale_y = 1.5
@@ -858,7 +862,7 @@ class ModularTreePropertyGroup(PropertyGroup):
 # classes to register (panels will be in the UI in the order they are listed here)
 classes = [MakeTreeOperator, BatchTreeOperator, MakeTwigOperator, UpdateTreeOperator, UpdateTwigOperator,
            SaveTreePresetOperator, RemoveTreePresetOperator, LoadTreePresetOperator, WindOperator,
-           MakeControllerOperator, MakeTerrainOperator, SetupNodeTreeOperator,
+           MakeControllerOperator, MakeTerrainOperator, SetupNodeTreeOperator, ConnectStrokes,
            MakeTreePanel, BatchTreePanel, RootsAndTrunksPanel, TreeBranchesPanel, AdvancedSettingsPanel,
            MakeTwigPanel, TreePresetLoadMenu, TreePresetRemoveMenu, WindAnimationPanel, MakeTreePresetsPanel,
            InstallTreePresetOperator, TreeAddonPrefs, ModularTreePropertyGroup]

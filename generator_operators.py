@@ -23,8 +23,9 @@ from math import sqrt
 
 import bpy
 from bpy.types import Operator
+from bpy.props import IntProperty, BoolProperty
 
-from .tree_creator import alt_create_tree, create_twig
+from .tree_creator import alt_create_tree, create_twig, connect_strokes
 from .prep_manager import save_everything
 from .logo import display_logo
 from .nodes import setup_node_tree
@@ -242,4 +243,51 @@ class SetupNodeTreeOperator(Operator):
     def execute(self, context):
         mtree_props = context.scene.mtree_props
         setup_node_tree(bpy.data.node_groups[mtree_props.node_tree])
+        return {'FINISHED'}
+
+
+class ConnectStrokes(Operator):
+    """translate a stroke onto another"""
+    bl_idname = "mod_tree.connect_strokes"
+    bl_label = "connect strokes"
+    bl_options = {"REGISTER", "UNDO"}
+
+    automatic = BoolProperty(default=True)
+    connect_all = BoolProperty(default=True)
+    child_stroke_index = IntProperty(
+        default=-1)
+    parent_stroke_index = IntProperty(
+        default=0)
+
+    def execute(self, context):
+        gp = bpy.context.scene.grease_pencil
+        if gp is not None and gp.layers.active is not None and gp.layers.active.active_frame is not None and len(
+                 gp.layers.active.active_frame.strokes) > max(self.child_stroke_index, self.parent_stroke_index) and len(gp.layers.active.active_frame.strokes[0].points) > 1:
+
+            if self.connect_all:
+                moving_range = list(range(1, len(gp.layers.active.active_frame.strokes)))
+            else:
+                moving_range = [self.child_stroke_index]
+
+            for self.child_stroke_index in moving_range:
+
+                moving_stroke = [i.co for i in gp.layers.active.active_frame.strokes[self.child_stroke_index].points]
+                if self.automatic:
+                    pos = gp.layers.active.active_frame.strokes[self.child_stroke_index].points[0].co
+                    min_dist = 10
+                    min_index = 500
+                    for index, stroke in enumerate(gp.layers.active.active_frame.strokes):
+                        if index != self.child_stroke_index % len(gp.layers.active.active_frame.strokes):
+                            dist = min([(i.co - pos).length for i in stroke.points])
+                            if dist < min_dist:
+                                min_index = index
+                                min_dist = dist
+                    print(min_index)
+                    self.parent_stroke_index = min_index
+                # self.child_stroke_index = min(self.child_stroke_index, len(gp.layers.active.active_frame.strokes)-1)
+                # self.parent_stroke_index = min(self.parent_stroke_index, len(gp.layers.active.active_frame.strokes) - 1)
+                parent_stroke = [i.co for i in gp.layers.active.active_frame.strokes[self.parent_stroke_index].points]
+                new_locations = connect_strokes(moving_stroke, parent_stroke)
+                for i, point in enumerate(gp.layers.active.active_frame.strokes[self.child_stroke_index].points):
+                    point.co = new_locations[i]
         return {'FINISHED'}

@@ -19,7 +19,7 @@
 
 from mathutils import Vector, Matrix, Euler
 from random import random, randint, seed
-from math import pi, radians, exp, sqrt, atan
+from math import pi, radians, exp, sqrt, atan, sin, cos, degrees
 
 import bpy
 import bmesh
@@ -1170,7 +1170,7 @@ def join(verts, faces, indexes, object_verts, object_faces, scale, i1, i2, entre
 
     i1 = [n + i for i in i1]
     i2 = [n + i for i in i2]
-            
+
     return i1, i2, d1, d2, r1, r2, to_be_painted  # no need to return i1[0] and i2[0]...just do that outside of the func
 
 
@@ -1360,7 +1360,7 @@ def rehash_set(s, p_dist):
 
 
 def smooth_stroke(iterations, smooth, points):
-    
+
     for i in range(iterations):
         new_points = list()
         new_points.append(points[0])
@@ -1369,6 +1369,13 @@ def smooth_stroke(iterations, smooth, points):
         new_points.append(points[-1])
         points = new_points
     return points
+
+
+def path_to_stroke(pos, stroke):
+    new_stroke = [pos] + stroke
+    new_stroke = rehash_set(new_stroke, bpy.context.scene.mtree_props.stroke_step_size)
+    new_stroke = smooth_stroke(2, .3, new_stroke)
+    return new_stroke
 
 
 def resolution(coord):
@@ -1401,6 +1408,41 @@ def configure_obstacle():
     return None
 
 
+def distance_from_segment(point, segment):
+    seg_vect = segment[1]-segment[0]
+    point_vect = point - segment[0]
+    angle = seg_vect.angle(point_vect)
+    dist = sin(angle) * point_vect.length
+    return min(dist, (point - segment[0]).length, (point - segment[1]).length)
+
+
+def connect_strokes(moving_stroke, parent_stroke):
+    point = moving_stroke[0]
+    segment = sorted([(i - point) for i in parent_stroke])[:2]
+    segment = [i + point for i in segment]
+    seg_vect = segment[1] - segment[0]
+    point_vect = point - segment[0]
+    angle = seg_vect.angle(point_vect)
+    seg_vect.normalize()
+    projection_vect = cos(angle) * point_vect.length * seg_vect
+    projection = projection_vect + segment[0] - point
+    return [i + projection for i in moving_stroke]
+
+
+def find_rotation_amount(dir1, dir2):
+    dir1.normalize()
+    dir2.normalize()
+    orth_dir2 = dir2 - (dir2.dot(dir1) * dir1)
+    if dir1 != Vector((1, 0, 0)) and dir != Vector((1, 0, 0)):
+        dir3 = Vector((-1, 0, 0))
+        orth_dir3 = dir3 - (dir3.dot(dir1) * dir1)
+    else:
+        dir3 = Vector((0,0,-1))
+        orth_dir3 = dir3 - (dir3.dot(dir1) * dir1)
+
+    return degrees(orth_dir2.angle(orth_dir3)) + 180
+
+
 class Tree:
 
     def __init__(self, position=Vector((0, 0, 0))):
@@ -1425,6 +1467,7 @@ class Tree:
         self.roots_to_create = False
         self.using_grease = False
         self.grease_strokes = []
+        self.grease_strokes_attractors = []
         self.static_props = []
         self.iteration_curve_props = []
         self.radius_curve_props = []
@@ -1438,12 +1481,29 @@ class Tree:
         gp = bpy.context.scene.grease_pencil
         if mtree_props.use_grease_pencil and gp is not None and gp.layers.active is not None and gp.layers.active.active_frame is not None and len(
                 gp.layers.active.active_frame.strokes) > 0 and len(gp.layers.active.active_frame.strokes[0].points) > 2:
-            stroke = [i.co for i in gp.layers.active.active_frame.strokes[0].points.values()]
-            stroke = rehash_set(stroke, mtree_props.stroke_step_size)
-            stroke = smooth_stroke(2,.3,stroke)
-            self.grease_strokes.append(stroke)
+            corr = gp.layers.active.active_frame.strokes[0].points.values()[0].co
+            for i, stroke in enumerate(gp.layers.active.active_frame.strokes):
+                stroke = [j.co - corr for j in stroke.points.values()]
+                p_dist = mtree_props.trunk_space if i == 0 else mtree_props.branch_length
+                stroke = rehash_set(stroke, p_dist)
+                stroke = smooth_stroke(7, .3, stroke)
+
+                if i > 0:
+                    dist = 10
+                    pos = stroke[0]
+                    for previous_stroke in self.grease_strokes:
+                        for j in range(len(previous_stroke)-1):
+                            dist = min(dist, distance_from_segment(pos, (previous_stroke[j], previous_stroke[j+1])))
+                    guide_type = 'new'
+                    if dist <= .5:
+                        guide_type = 'split'
+                        print('pencil_split_working')
+
+                    self.grease_strokes_attractors.append((i, stroke[0], guide_type))
+
+                self.grease_strokes.append(stroke)
             self.using_grease = True
-            self.position = self.grease_strokes[0][0] - Vector((0, 0, .5))
+            self.position = corr - Vector((0, 0, .5))
 
     def add_branch_layer(self, iteration, branch_type="Branch", is_twig=False):
         scene = bpy.context.scene
@@ -1534,16 +1594,79 @@ class Tree:
                             (hit_pos - world_pos).length + 1) * 2
                         direction += face_normal * force
 
+            will_follow_stroke = 0
+            if len(self.grease_strokes_attractors) > 0:
+                future_stroke_index = -1
+                closest_attractor = [a for a in self.grease_strokes_attractors[0]] + [10, 0]
+                for attractor_index, attractor in enumerate(self.grease_strokes_attractors):
+                    position = attractor[1]
+                    relative_position = pos
+                    if stroke_index > 0 and len(self.grease_strokes[stroke_index]) > 0:
+                        relative_position = self.grease_strokes[stroke_index][0]
+                    if closest_attractor[3] > (position - pos).length:
+                        closest_attractor = [a for a in attractor] + [(position - relative_position).length, attractor_index]
+
+                if closest_attractor[3] <= 1.5:  # mtree_props.trunk_length + radius:
+                    future_stroke_index, attractor_position, guide_type, distance_to_attractor, attractor_stroke_index = closest_attractor
+                    print(guide_type)
+                    if stroke_index >= 0 and guide_type == 'split':
+                        print('pencil_split')
+                        pencil_branch_length = closest_attractor[3]  - radius
+                        will_follow_stroke = 1
+                        # self.grease_strokes[future_stroke_index][0] = position
+                        self.grease_strokes_attractors.pop(attractor_stroke_index)
+                        pencil_rotation = find_rotation_amount(direction.copy(),
+                                                               self.grease_strokes[future_stroke_index][1] -
+                                                               self.grease_strokes[future_stroke_index][0])
+
             # if a branch follows a grease pencil stroke, change it's direction and length
             if stroke_index >= 0:
                 stroke = self.grease_strokes[stroke_index]
                 if len(stroke) <= 1:
                     stroke_index = -1
                 else:
+                    # print(stroke_index)
+                    aux_dir = stroke[1] - pos
                     direction = stroke[1] - stroke[0]
+                    dir_factor = aux_dir.angle(direction)
+                    # if stroke_index >0 and dir_factor < pi/3:
+                    #     direction = aux_dir
                     pencil_branch_length = direction.length
                     direction.normalize()
                     stroke.pop(0)
+
+
+
+
+                # for new_to_pop, attractor in enumerate(self.grease_strokes_attractors):
+                #     position = attractor[1]
+                #     if dist_to_attractor > (position - pos).length:
+                #         future_stroke_index = new_index
+                #         to_pop_index = new_to_pop
+                #         dist_to_attractor = (position - pos).length
+                #         guide_type = guide
+                # if dist_to_attractor < 1.5:
+                #     if
+
+            # if stroke_index == -1 and bool(self.grease_strokes_attractors):
+            #     dist_to_attractor = 10
+            #     future_stroke_index = -1
+            #     to_pop_index = -1
+            #     for new_to_pop, (new_index, position) in enumerate(self.grease_strokes_attractors):
+            #         if dist_to_attractor > (position - pos).length:
+            #             future_stroke_index = new_index
+            #             to_pop_index = new_to_pop
+            #             dist_to_attractor = (position - pos).length
+            #
+            #     if dist_to_attractor < 1.5:
+            #         will_follow_stroke = 1
+            #         self.grease_strokes_attractors.pop(to_pop_index)
+            #         self.grease_strokes[future_stroke_index] = path_to_stroke(pos, self.grease_strokes[future_stroke_index])
+            #         grease_dir = self.grease_strokes[future_stroke_index][1] - self.grease_strokes[future_stroke_index][0]
+            #         angle = direction.angle(grease_dir)
+            #         print(will_follow_stroke)
+            #         if angle < pi / 6:
+            #             will_follow_stroke = 2
 
             if real_radius < mtree_props.radius / 4 and branch_type == "Branch" and mtree_props.create_particle_emitter:
                 self.leafs.append((pos, direction))
@@ -1591,7 +1714,7 @@ class Tree:
                     (ni, radius * mtree_props.trunk_radius_dec, direction, nb, is_trunk, curr_rotation+rot, curr_height + new_height, stroke_index))
             # cut................................................................................
             elif (iteration == mtree_props.iteration + mtree_props.trunk_length - 1 and branch_type == "Branch") \
-                    or random() < break_chance * exp(-real_radius) \
+                    or (random() < break_chance * exp(-real_radius) and stroke_index == -1 and not will_follow_stroke) \
                     or real_radius < mtree_props.branch_min_radius \
                     or (iteration == mtree_props.roots_iteration - 1 and branch_type == "Roots"):
 
@@ -1616,16 +1739,19 @@ class Tree:
                     and iteration == mtree_props.trunk_length + 1 \
                     and branch_type == "Branch" \
                     and not mtree_props.preserve_trunk \
-                    or random() < split_probability:
+                    or random() < split_probability \
+                    or will_follow_stroke == 1:
 
                 if iteration == mtree_props.trunk_length + 1 and not(is_twig):
-                    curr_rotation = randint(0,360)
+                    curr_rotation = randint(0, 360)
+                if will_follow_stroke == 1:
+                    curr_rotation = pencil_rotation
 
                 variation = mtree_props.trunk_variation if is_trunk else mtree_props.randomangle
 
-                rand_j = randint(1, len(Joncts)-1)
-                rand_t = randint(0, len(Trunks)-1)
-                big_j = Joncts[rand_j] if (not is_trunk) else Trunks[rand_t]
+                rand_j = 1 if will_follow_stroke == 1 else randint(1, len(Joncts)-1)
+                rand_t = 3 if will_follow_stroke == 1 else randint(0, len(Trunks)-1)
+                big_j = Joncts[rand_j] if (not (is_trunk or stroke_index > -1)) else Trunks[rand_t]
                 i1 = [iteration for iteration in big_j.sortie[0]]
                 i2 = [iteration for iteration in big_j.sortie[1]]
                 jonct_uv = [u for u in big_j.uv]
@@ -1633,6 +1759,8 @@ class Tree:
                 inter_fact = mtree_props.trunk_split_angle if is_trunk else mtree_props.split_angle
                 jonct_verts = interpolate(big_j.verts1, big_j.verts2, inter_fact)
                 length = pencil_branch_length if stroke_index > -1 else mtree_props.trunk_space if is_trunk else mtree_props.branch_length
+                if will_follow_stroke == 1:
+                    length = pencil_branch_length
 
                 if branch_type == "Roots":
                     length = mtree_props.roots_length * sqrt(real_radius)
@@ -1645,7 +1773,14 @@ class Tree:
                 sortie1 = (self.verts[ni1[0]] + self.verts[ni1[4]]) / 2
                 sortie2 = (self.verts[ni2[0]] + self.verts[ni2[4]]) / 2
 
-                if stroke_index > -1:
+                if will_follow_stroke == 1:
+                    pass
+                    # self.grease_strokes[future_stroke_index][0] = sortie2
+
+                new_stroke_index = future_stroke_index if will_follow_stroke == 1 else -1
+                stroke_index = stroke_index if stroke_index > -1 else future_stroke_index if will_follow_stroke == 2 else -1
+
+                if stroke_index >=0:
                     dist = (sortie1 - pos).length
                     points_to_take = int(dist/length)
                     for point in range(points_to_take):
@@ -1661,26 +1796,25 @@ class Tree:
 
                 nb1 = (nb + 2, sortie1)
                 nb2 = (nb + 3, sortie2)
-                # if mtree_props.gravity_start <= iteration <= mtree_props.gravity_end and branch_type == "Branch":
-                #     dir1 = gravity(dir1, mtree_props.gravity_strength)
-                #     dir2 = gravity(dir2, mtree_props.gravity_strength)
-
                 new_height = curr_height + length * uv_scale + big_j.uv_height
 
                 rad_fact = (1 - (1-mtree_props.trunk_radius_dec)*(1+mtree_props.trunk_split_proba)) if is_trunk else mtree_props.radius_dec
-                rot = mtree_props.branch_rotate + (random()*2-1) * mtree_props.branch_random_rotate
+                rot = 0 if will_follow_stroke == 1 else mtree_props.branch_rotate + (random()*2-1) * mtree_props.branch_random_rotate
+
+
+
                 next_extremities.append(
                     (ni1, radius * rad_fact * r1, dir1, nb1, is_trunk, curr_rotation + rot, new_height, stroke_index))
                 if not(is_trunk and mtree_props.finish_trunk):
                     next_extremities.append(
-                        (ni2, radius * rad_fact * r2, dir2, nb2, False, curr_rotation + rot, new_height, -1))
+                        (ni2, radius * rad_fact * r2, dir2, nb2, False, curr_rotation + rot, new_height, new_stroke_index))
                 else:
                     self.late_extremities.append(
-                        (ni2, radius * rad_fact * r2, dir2, nb2, False, curr_rotation + rot, new_height, -1))
+                        (ni2, radius * rad_fact * r2, dir2, nb2, False, curr_rotation + rot, new_height, new_stroke_index))
             # growth..........................................................................................
             else:
                 branch_verts = [v for v in branch.verts]
-
+                stroke_index = stroke_index if stroke_index > -1 else future_stroke_index if will_follow_stroke == 2 else -1
                 variation = mtree_props.trunk_variation if is_trunk else mtree_props.randomangle
                 length = pencil_branch_length if stroke_index > -1 else mtree_props.trunk_space if is_trunk else mtree_props.branch_length
                 if branch_type == "Roots":
